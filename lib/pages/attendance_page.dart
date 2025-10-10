@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'package:permission_handler/permission_handler.dart';
- import 'package:location/location.dart'; 
+import 'package:location/location.dart'; 
 
 class AttendancePage extends StatefulWidget {
   final String employeeId;
@@ -161,6 +161,34 @@ Future<void> _checkIn() async {
 
   // ---------------- Check Out ----------------
   Future<void> _checkOut() async {
+    final permissionGranted = await requestLocationPermission();
+  if (!permissionGranted) {
+    _showSnack('Location permission is required for check-out.');
+    return;
+  }
+
+  // 2️⃣ Check if location service is enabled
+  Location location = Location();
+  bool serviceEnabled = await location.serviceEnabled();
+  if (!serviceEnabled) {
+    serviceEnabled = await location.requestService();
+    if (!serviceEnabled) {
+      _showSnack('Please turn on location services to check out.');
+      return;
+    }
+  }
+
+  // 3️⃣ Check if connected to the **office WiFi**
+  final isOfficeWifi = await WifiService.isOnOfficeWifi(
+    context,
+    officeSsid: officeSsid, // "INFIVITY"
+  );
+
+  if (!isOfficeWifi) {
+    _showSnack('You must be connected to the office WiFi ($officeSsid) to check in.');
+    return;
+  }
+
     if (checkInTime == null) return;
 
     timer?.cancel();
