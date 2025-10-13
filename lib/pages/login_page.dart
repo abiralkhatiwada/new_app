@@ -1,7 +1,10 @@
+import 'dart:io'; // 🟢 Added
+import 'package:device_info_plus/device_info_plus.dart'; // 🟢 Added
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../pages/attendance_page.dart';
+
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -17,6 +20,20 @@ class _LoginPageState extends State<LoginPage> {
   final Color primaryColor = const Color(0xFF4E2780);
   final Color accentColor = const Color(0xFFFFDE59);
 
+  // 🟢 Added for device restriction
+  Future<String> getDeviceId() async {
+    final deviceInfo = DeviceInfoPlugin();
+    if (Platform.isAndroid) {
+      final androidInfo = await deviceInfo.androidInfo;
+      return androidInfo.id ?? "unknown";
+    } else if (Platform.isIOS) {
+      final iosInfo = await deviceInfo.iosInfo;
+      return iosInfo.identifierForVendor ?? "unknown";
+    } else {
+      return "unsupported-platform";
+    }
+  }
+
   void login() async {
   final id = _idController.text.trim();
   final name = _nameController.text.trim();
@@ -28,8 +45,7 @@ class _LoginPageState extends State<LoginPage> {
   setState(() => _loading = true);
 
   try {
-    final docRef =
-        FirebaseFirestore.instance.collection('employees').doc(id);
+    final docRef = FirebaseFirestore.instance.collection('employees').doc(id);
     final docSnap = await docRef.get();
 
     if (!docSnap.exists) {
@@ -42,8 +58,51 @@ class _LoginPageState extends State<LoginPage> {
     if (empName.toLowerCase() != name.toLowerCase()) {
       _showSnack('Name does not match Employee ID');
     } else {
-      // ✅ Ensure employee document exists (important for admin or new users)
+      // ✅ Ensure employee document exists
       await docRef.set({'name': empName}, SetOptions(merge: true));
+
+      // 🟢 Added for device restriction (new)
+     
+      final deviceInfo = DeviceInfoPlugin();
+      String deviceId = '';
+      if (Theme.of(context).platform == TargetPlatform.android) {
+        final info = await deviceInfo.androidInfo;
+        deviceId = info.id;
+      } else if (Theme.of(context).platform == TargetPlatform.windows) {
+        final info = await deviceInfo.windowsInfo;
+        deviceId = info.deviceId;
+      } else if (Theme.of(context).platform == TargetPlatform.iOS) {
+        final info = await deviceInfo.iosInfo;
+        deviceId = info.identifierForVendor ?? '';
+      }
+
+      if (deviceId.isEmpty) {
+        _showSnack('Unable to fetch device information');
+        setState(() => _loading = false);
+        return;
+      }
+
+      // 🔍 Check if this device is already registered to another employee
+      final deviceDoc = await FirebaseFirestore.instance
+          .collection('devices')
+          .doc(deviceId)
+          .get();
+
+      if (deviceDoc.exists && deviceDoc['employee_id'] != id) {
+        _showSnack('This device is already registered to another employee.');
+        setState(() => _loading = false);
+        return;
+      }
+
+      // ✅ If not registered, link this device to employee
+      await FirebaseFirestore.instance.collection('devices').doc(deviceId).set({
+        'employee_id': id,
+        'employee_name': empName,
+      }, SetOptions(merge: true));
+
+      await docRef.set({
+        'allowed_devices': FieldValue.arrayUnion([deviceId])
+      }, SetOptions(merge: true));
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('employee_id', id);
@@ -75,7 +134,7 @@ class _LoginPageState extends State<LoginPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white, // ✅ light background
+      backgroundColor: Colors.white,
       appBar: AppBar(
         backgroundColor: primaryColor,
         title: const Text('Employee Login'),
@@ -116,8 +175,10 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     child: const Text(
                       'Login',
-                      style:
-                          TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
           ],

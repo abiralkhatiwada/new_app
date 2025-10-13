@@ -19,8 +19,13 @@ dependencies:
   geolocator: ^13.0.1
   intl: ^0.20.2
   location: ^8.0.1
+  device_info_plus: ^12.1.0
+  
 
 dev_dependencies:
-  flutter_test:
-    sdk: flutter
-  flutter_lints: ^2.0.0
+  flutter_launcher_icons: ^0.10.0
+
+flutter_icons:
+  android: true
+  ios: true
+  image_path: "lib/assets/icons/logo.png"

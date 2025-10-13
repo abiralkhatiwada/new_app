@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:attend/services/wifi_service.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:location/location.dart'; 
+import 'package:location/location.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 
 class AttendancePage extends StatefulWidget {
   final String employeeId;
@@ -29,12 +31,26 @@ class _AttendancePageState extends State<AttendancePage> {
 
   final Color primaryColor = const Color(0xFF4E2780);
   final Color accentColor = const Color(0xFFFFDE59);
-  final String officeSsid = "INFIVITY"; 
+  final String officeSsid = "INFIVITY";
 
   @override
   void initState() {
     super.initState();
     _checkTodayStatus();
+  }
+
+  // ---------------- Device ID ----------------
+  Future<String> getDeviceId() async {
+    final deviceInfo = DeviceInfoPlugin();
+    if (Platform.isAndroid) {
+      final androidInfo = await deviceInfo.androidInfo;
+      return androidInfo.id ?? "unknown";
+    } else if (Platform.isIOS) {
+      final iosInfo = await deviceInfo.iosInfo;
+      return iosInfo.identifierForVendor ?? "unknown";
+    } else {
+      return "unsupported-platform";
+    }
   }
 
   // ---------------- Permission ----------------
@@ -46,7 +62,6 @@ class _AttendancePageState extends State<AttendancePage> {
     return status.isGranted;
   }
 
-
   // ---------------- Load Today's Attendance ----------------
   Future<void> _checkTodayStatus() async {
     final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
@@ -56,154 +71,214 @@ class _AttendancePageState extends State<AttendancePage> {
         .collection('attendance')
         .doc(today);
 
-    final doc = await docRef.get();
-    if (doc.exists) {
-      final data = doc.data()!;
-      final checkIn = data['checkin_time'] != null
-          ? DateTime.parse(data['checkin_time'])
-          : null;
-      final checkOut = data['checkout_time'] != null
-          ? DateTime.parse(data['checkout_time'])
-          : null;
-      final spent = data['time_spent'] ?? 0;
+    try {
+      final doc = await docRef.get();
+      if (doc.exists) {
+        final data = doc.data()!;
+        final checkIn = data['checkin_time'] != null
+            ? (data['checkin_time'] as Timestamp).toDate()
+            : null;
+        final checkOut = data['checkout_time'] != null
+            ? (data['checkout_time'] as Timestamp).toDate()
+            : null;
+        final spent = data['time_spent'] ?? 0;
 
-      if (checkIn != null && checkOut == null) {
-        setState(() {
-          isCheckedIn = true;
-          isCheckedOut = false;
-          checkInTime = checkIn;
-          elapsed = DateTime.now().difference(checkInTime!);
-        });
+        if (checkIn != null && checkOut == null) {
+          setState(() {
+            isCheckedIn = true;
+            isCheckedOut = false;
+            checkInTime = checkIn;
+            elapsed = DateTime.now().difference(checkInTime!);
+          });
 
+          timer = Timer.periodic(const Duration(seconds: 1), (_) {
+            setState(() {
+              elapsed = DateTime.now().difference(checkInTime!);
+            });
+          });
+        } else if (checkIn != null && checkOut != null) {
+          setState(() {
+            isCheckedIn = true;
+            isCheckedOut = true;
+            elapsed = Duration(seconds: spent);
+          });
+        }
+      }
+    } catch (e) {
+      _showSnack('Failed to load today\'s attendance: $e');
+    }
+  }
+
+  // ---------------- Register Device (One-Time) ----------------
+  Future<void> _registerDevice() async {
+    try {
+      final deviceId = await getDeviceId();
+      final docRef =
+          FirebaseFirestore.instance.collection('employees').doc(widget.employeeId);
+      final docSnap = await docRef.get();
+
+      // 🟢 Added: Global device ownership check
+      final deviceDoc = await FirebaseFirestore.instance
+          .collection('devices')
+          .doc(deviceId)
+          .get();
+
+      if (deviceDoc.exists) {
+        final registeredTo = deviceDoc.data()?['employee_id'];
+        if (registeredTo != widget.employeeId) {
+          _showSnack('❌ This device is already registered to another employee.');
+          return;
+        } else {
+          _showSnack('This device is already registered for you.');
+          return;
+        }
+      }
+
+      // Existing logic to save device under employee
+      await docRef.set({
+        'allowed_devices': FieldValue.arrayUnion([deviceId])
+      }, SetOptions(merge: true));
+
+      // 🟢 Added: Save globally in devices collection
+      await FirebaseFirestore.instance
+          .collection('devices')
+          .doc(deviceId)
+          .set({
+        'employee_id': widget.employeeId,
+        'employee_name': widget.employeeName,
+      });
+
+      _showSnack('✅ Device registered successfully!');
+    } catch (e) {
+      _showSnack('Device registration failed: $e');
+    }
+  }
+  // ---------------- Check In ----------------
+  Future<void> _checkIn() async {
+    try {
+      final deviceId = await getDeviceId();
+      final employeeDoc = await FirebaseFirestore.instance
+          .collection('employees')
+          .doc(widget.employeeId)
+          .get();
+      final allowedDevices =
+          List<String>.from(employeeDoc.data()?['allowed_devices'] ?? []);
+
+      if (!allowedDevices.contains(deviceId)) {
+        _showSnack('This device is not authorized for check-in.');
+        return;
+      }
+
+      final permissionGranted = await requestLocationPermission();
+      if (!permissionGranted) {
+        _showSnack('Location permission is required for check-in.');
+        return;
+      }
+
+      Location location = Location();
+      bool serviceEnabled = await location.serviceEnabled();
+      if (!serviceEnabled) {
+        serviceEnabled = await location.requestService();
+        if (!serviceEnabled) {
+          _showSnack('Please turn on location services to check in.');
+          return;
+        }
+      }
+
+      final isOfficeWifi =
+          await WifiService.isOnOfficeWifi(context, officeSsid: officeSsid);
+
+      if (!isOfficeWifi) {
+        _showSnack('You must be connected to the office WiFi ($officeSsid) to check in.');
+        return;
+      }
+
+      final now = FieldValue.serverTimestamp();
+      final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
+
+      await FirebaseFirestore.instance
+          .collection('employees')
+          .doc(widget.employeeId)
+          .collection('attendance')
+          .doc(today)
+          .set({
+        'date': today,
+        'checkin_time': now,
+        'checkout_time': null,
+        'time_spent': 0,
+      });
+
+      setState(() {
+        isCheckedIn = true;
+        checkInTime = DateTime.now();
+        elapsed = Duration.zero;
         timer = Timer.periodic(const Duration(seconds: 1), (_) {
           setState(() {
             elapsed = DateTime.now().difference(checkInTime!);
           });
         });
-      } else if (checkIn != null && checkOut != null) {
-        setState(() {
-          isCheckedIn = true;
-          isCheckedOut = true;
-          elapsed = Duration(seconds: spent);
-        });
-      }
-    }
-  }
-
-  // ---------------- Check In ----------------
- 
-
-Future<void> _checkIn() async {
-  // 1️⃣ Request permission
-  final permissionGranted = await requestLocationPermission();
-  if (!permissionGranted) {
-    _showSnack('Location permission is required for check-in.');
-    return;
-  }
-
-  // 2️⃣ Check if location service is enabled
-  Location location = Location();
-  bool serviceEnabled = await location.serviceEnabled();
-  if (!serviceEnabled) {
-    serviceEnabled = await location.requestService();
-    if (!serviceEnabled) {
-      _showSnack('Please turn on location services to check in.');
-      return;
-    }
-  }
-
-  // 3️⃣ Check if connected to the **office WiFi**
-  final isOfficeWifi = await WifiService.isOnOfficeWifi(
-    context,
-    officeSsid: officeSsid, // "INFIVITY"
-  );
-
-  if (!isOfficeWifi) {
-    _showSnack('You must be connected to the office WiFi ($officeSsid) to check in.');
-    return;
-  }
-
-  // 4️⃣ Everything okay → write to Firestore
-  final now = DateTime.now();
-  final today = DateFormat('yyyy-MM-dd').format(now);
-
-  try {
-    await FirebaseFirestore.instance
-        .collection('employees')
-        .doc(widget.employeeId)
-        .collection('attendance')
-        .doc(today)
-        .set({
-      'date': today,
-      'checkin_time': now.toIso8601String(),
-      'checkout_time': null,
-      'time_spent': 0,
-    });
-
-    setState(() {
-      isCheckedIn = true;
-      checkInTime = now;
-      elapsed = Duration.zero;
-      timer = Timer.periodic(const Duration(seconds: 1), (_) {
-        setState(() {
-          elapsed = DateTime.now().difference(checkInTime!);
-        });
       });
-    });
 
-    _showSnack('Checked in successfully!');
-  } catch (e) {
-    _showSnack('Check-in failed: $e');
+      _showSnack('Checked in successfully!');
+    } catch (e) {
+      _showSnack('Check-in failed: $e');
+    }
   }
-}
-
-
 
   // ---------------- Check Out ----------------
   Future<void> _checkOut() async {
-    final permissionGranted = await requestLocationPermission();
-  if (!permissionGranted) {
-    _showSnack('Location permission is required for check-out.');
-    return;
-  }
-
-  // 2️⃣ Check if location service is enabled
-  Location location = Location();
-  bool serviceEnabled = await location.serviceEnabled();
-  if (!serviceEnabled) {
-    serviceEnabled = await location.requestService();
-    if (!serviceEnabled) {
-      _showSnack('Please turn on location services to check out.');
-      return;
-    }
-  }
-
-  // 3️⃣ Check if connected to the **office WiFi**
-  final isOfficeWifi = await WifiService.isOnOfficeWifi(
-    context,
-    officeSsid: officeSsid, // "INFIVITY"
-  );
-
-  if (!isOfficeWifi) {
-    _showSnack('You must be connected to the office WiFi ($officeSsid) to check in.');
-    return;
-  }
-
-    if (checkInTime == null) return;
-
-    timer?.cancel();
-    final now = DateTime.now();
-    final totalSeconds = now.difference(checkInTime!).inSeconds;
-    final today = DateFormat('yyyy-MM-dd').format(now);
-
     try {
+      final deviceId = await getDeviceId();
+      final employeeDoc = await FirebaseFirestore.instance
+          .collection('employees')
+          .doc(widget.employeeId)
+          .get();
+      final allowedDevices =
+          List<String>.from(employeeDoc.data()?['allowed_devices'] ?? []);
+
+      if (!allowedDevices.contains(deviceId)) {
+        _showSnack('This device is not authorized for check-out.');
+        return;
+      }
+
+      final permissionGranted = await requestLocationPermission();
+      if (!permissionGranted) {
+        _showSnack('Location permission is required for check-out.');
+        return;
+      }
+
+      Location location = Location();
+      bool serviceEnabled = await location.serviceEnabled();
+      if (!serviceEnabled) {
+        serviceEnabled = await location.requestService();
+        if (!serviceEnabled) {
+          _showSnack('Please turn on location services to check out.');
+          return;
+        }
+      }
+
+      final isOfficeWifi =
+          await WifiService.isOnOfficeWifi(context, officeSsid: officeSsid);
+
+      if (!isOfficeWifi) {
+        _showSnack('You must be connected to the office WiFi ($officeSsid) to check out.');
+        return;
+      }
+
+      if (checkInTime == null) return;
+
+      timer?.cancel();
+      final now = FieldValue.serverTimestamp();
+      final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
+      final totalSeconds = elapsed.inSeconds;
+
       await FirebaseFirestore.instance
           .collection('employees')
           .doc(widget.employeeId)
           .collection('attendance')
           .doc(today)
           .update({
-        'checkout_time': now.toIso8601String(),
+        'checkout_time': now,
         'time_spent': totalSeconds,
       });
 
@@ -212,8 +287,7 @@ Future<void> _checkIn() async {
         elapsed = Duration(seconds: totalSeconds);
       });
 
-      final formattedTime = formatSeconds(totalSeconds);
-      _showSnack('✅ Checked out! Total time: $formattedTime');
+      _showSnack('✅ Checked out! Total time: ${formatSeconds(totalSeconds)}');
     } catch (e) {
       _showSnack('Check-out failed: $e');
     }
@@ -280,6 +354,21 @@ Future<void> _checkIn() async {
                 ),
               ),
               const SizedBox(height: 50),
+              ElevatedButton(
+                onPressed: _registerDevice,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: primaryColor,
+                  foregroundColor: accentColor,
+                  minimumSize: const Size(200, 50),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+                child: const Text(
+                  'Register Device',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+              ),
+              const SizedBox(height: 20),
               ElevatedButton(
                 onPressed: (!isCheckedIn) ? _checkIn : null,
                 style: ElevatedButton.styleFrom(
