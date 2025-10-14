@@ -20,6 +20,7 @@ dependencies:
   intl: ^0.20.2
   location: ^8.0.1
   device_info_plus: ^12.1.0
+  flutter_native_splash: ^2.2.16
   
 
 dev_dependencies:
@@ -29,3 +30,10 @@ flutter_icons:
   android: true
   ios: true
   image_path: "lib/assets/icons/logo.png"
+
+
+flutter_native_splash:
+  image: "lib/assets/icons/logo.png" # your organization logo
+  android: true
+  ios: true
+  web: true

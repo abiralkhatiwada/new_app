@@ -327,8 +327,55 @@ class _AttendancePageState extends State<AttendancePage> {
       backgroundColor: Colors.white,
       appBar: AppBar(
         backgroundColor: primaryColor,
-        title: Text('Welcome, ${widget.employeeName}'),
+        title: Text('Welcome, ${widget.employeeName}',
+         style: TextStyle(color: Colors.white),
+         ),
         centerTitle: true,
+        actions: [
+    Padding(
+      padding: const EdgeInsets.only(right: 16.0, top: 8.0),
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          IconButton(
+            icon: const Icon(
+              Icons.notifications,
+              size: 30,
+            ),
+            onPressed: () {
+              // Handle tap on notification bell
+            },
+          ),
+
+          // 🔴 Notification badge
+          Positioned(
+            right: 6,
+            top: 6,
+            child: Container(
+              padding: const EdgeInsets.all(3),
+              decoration: const BoxDecoration(
+                color: Colors.red,
+                shape: BoxShape.circle,
+              ),
+              constraints: const BoxConstraints(
+                minWidth: 16,
+                minHeight: 16,
+              ),
+              child: const Text(
+                '3', // you can make this dynamic
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  ],
       ),
       body: Center(
         child: Padding(
