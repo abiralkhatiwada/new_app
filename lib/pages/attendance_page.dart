@@ -328,7 +328,7 @@ class _AttendancePageState extends State<AttendancePage> {
       appBar: AppBar(
         backgroundColor: primaryColor,
         title: Text('Welcome, ${widget.employeeName}',
-         style: TextStyle(color: Colors.white),
+         style: TextStyle(color: accentColor),
          ),
         centerTitle: true,
         actions: [

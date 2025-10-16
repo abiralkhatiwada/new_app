@@ -137,7 +137,8 @@ class _LoginPageState extends State<LoginPage> {
       backgroundColor: Colors.white,
       appBar: AppBar(
         backgroundColor: primaryColor,
-        title: const Text('Employee Login'),
+        title: Text('Employee Login',style: TextStyle(color: accentColor),),
+        
         centerTitle: true,
       ),
       body: Padding(
