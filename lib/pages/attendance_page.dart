@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:io';
-import 'package:attend/services/wifi_service.dart';
+import 'package:Infivity/services/wifi_service.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
@@ -115,7 +115,7 @@ class _AttendancePageState extends State<AttendancePage> {
       final deviceId = await getDeviceId();
       final docRef =
           FirebaseFirestore.instance.collection('employees').doc(widget.employeeId);
-      final docSnap = await docRef.get();
+      await docRef.get();
 
       // 🟢 Added: Global device ownership check
       final deviceDoc = await FirebaseFirestore.instance

@@ -1,7 +1,7 @@
-name: attend
+name: Infivity
 description: Attendance app
 
-publish_to: 'none' 
+publish_to: 'none'
 version: 1.0.0+1
 
 environment:
@@ -20,20 +20,34 @@ dependencies:
   intl: ^0.20.2
   location: ^8.0.1
   device_info_plus: ^12.1.0
-  flutter_native_splash: ^2.2.16
-  
 
 dev_dependencies:
-  flutter_launcher_icons: ^0.10.0
+  flutter_test:
+    sdk: flutter
+  flutter_launcher_icons: ^0.13.1
+  flutter_native_splash: ^2.2.16
 
-flutter_icons:
+flutter_launcher_icons:
   android: true
   ios: true
-  image_path: "lib/assets/icons/logo.png"
-
+  image_path: "lib/assets/icons/infivity.png"
+  adaptive_icon_foreground: "lib/assets/icons/infivity.png"
+  adaptive_icon_background: "#4e2780"
 
 flutter_native_splash:
-  image: "lib/assets/icons/logo.png" # your organization logo
+  color: "#4e2780"
+  image: "lib/assets/icons/infivity2.png"
   android: true
   ios: true
   web: true
+
+  
+  android_gravity: fill
+  ios_content_mode: scaleAspectFill
+  web_image_mode: cover
+
+flutter:
+  uses-material-design: true
+  assets:
+    - lib/assets/icons/infivity.png
+    - lib/assets/icons/infivity2.png
