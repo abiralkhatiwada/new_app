@@ -10,6 +10,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:location/location.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 import '../pages/login_page.dart';
 
 class AttendancePage extends StatefulWidget {
@@ -119,18 +120,30 @@ class _AttendancePageState extends State<AttendancePage> {
     super.dispose();
   }
 
-  // ---------------- Device ID ----------------
+  // ---------------- Device ID (Samsung-safe) ----------------
   Future<String> getDeviceId() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    // Reuse stored device ID if available
+    String? savedId = prefs.getString('device_id');
+    if (savedId != null) return savedId;
+
     final deviceInfo = DeviceInfoPlugin();
+    String newId;
+
     if (Platform.isAndroid) {
       final androidInfo = await deviceInfo.androidInfo;
-      return androidInfo.id;
+      // Samsung-safe unique ID (model + random UUID)
+      newId = '${androidInfo.model}_${const Uuid().v4()}';
     } else if (Platform.isIOS) {
       final iosInfo = await deviceInfo.iosInfo;
-      return iosInfo.identifierForVendor ?? "unknown";
+      newId = iosInfo.identifierForVendor ?? const Uuid().v4();
     } else {
-      return "unsupported-platform";
+      newId = const Uuid().v4();
     }
+
+    await prefs.setString('device_id', newId);
+    return newId;
   }
 
   // ---------------- Device Registration Status ----------------
@@ -471,6 +484,7 @@ class _AttendancePageState extends State<AttendancePage> {
     );
   }
 
+  // ---------------- UI ----------------
   @override
   Widget build(BuildContext context) {
     final timeStr = formatSeconds(elapsed.inSeconds);
@@ -489,9 +503,7 @@ class _AttendancePageState extends State<AttendancePage> {
               color: Colors.white,
             ),
           ),
-          onPressed: () {
-            _logout();
-          },
+          onPressed: _logout,
           tooltip: 'Logout',
         ),
         title: Text(
