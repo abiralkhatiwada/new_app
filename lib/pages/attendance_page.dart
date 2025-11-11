@@ -31,6 +31,7 @@ class _AttendancePageState extends State<AttendancePage> {
   bool isCheckedIn = false;
   bool isCheckedOut = false;
   bool isDeviceRegistered = false;
+  bool isLoadingDevice = true;
   Duration elapsed = Duration.zero;
   Timer? timer;
   Timer? _autoLogoutTimer;
@@ -72,14 +73,13 @@ class _AttendancePageState extends State<AttendancePage> {
     _setupAutoLogout();
   }
 
-  // ---------------- Auto Logout (midnight + next-day reopen) ----------------
+  // ---------------- Auto Logout ----------------
   Future<void> _setupAutoLogout() async {
     final prefs = await SharedPreferences.getInstance();
     final today = DateTime.now();
     final todayStr = DateFormat('yyyy-MM-dd').format(today);
     final lastActiveDate = prefs.getString('lastActiveDate');
 
-    // If it's a new day -> auto logout
     if (lastActiveDate != null && lastActiveDate != todayStr) {
       _showSnack('Session expired. Please log in again.');
       await prefs.remove('lastActiveDate');
@@ -87,10 +87,8 @@ class _AttendancePageState extends State<AttendancePage> {
       return;
     }
 
-    // Otherwise, update today's date
     await prefs.setString('lastActiveDate', todayStr);
 
-    // Schedule midnight logout (for running app)
     final midnight = DateTime(today.year, today.month, today.day + 1);
     final durationUntilMidnight = midnight.difference(today);
 
@@ -120,11 +118,10 @@ class _AttendancePageState extends State<AttendancePage> {
     super.dispose();
   }
 
-  // ---------------- Device ID (Samsung-safe) ----------------
+  // ---------------- Device ID ----------------
   Future<String> getDeviceId() async {
     final prefs = await SharedPreferences.getInstance();
 
-    // Reuse stored device ID if available
     String? savedId = prefs.getString('device_id');
     if (savedId != null) return savedId;
 
@@ -133,7 +130,6 @@ class _AttendancePageState extends State<AttendancePage> {
 
     if (Platform.isAndroid) {
       final androidInfo = await deviceInfo.androidInfo;
-      // Samsung-safe unique ID (model + random UUID)
       newId = '${androidInfo.model}_${const Uuid().v4()}';
     } else if (Platform.isIOS) {
       final iosInfo = await deviceInfo.iosInfo;
@@ -148,17 +144,33 @@ class _AttendancePageState extends State<AttendancePage> {
 
   // ---------------- Device Registration Status ----------------
   Future<void> _checkDeviceRegistration() async {
-    final deviceId = await getDeviceId();
-    final deviceDoc = await FirebaseFirestore.instance
-        .collection('devices')
-        .doc(deviceId)
-        .get();
+    try {
+      final deviceId = await getDeviceId();
+      final deviceDoc = await FirebaseFirestore.instance
+          .collection('devices')
+          .doc(deviceId)
+          .get();
 
-    if (deviceDoc.exists &&
-        deviceDoc.data()?['employee_id'] == widget.employeeId) {
+      if (deviceDoc.exists) {
+        final registeredEmployee = deviceDoc.data()?['employee_id'];
+        if (registeredEmployee == widget.employeeId) {
+          setState(() {
+            isDeviceRegistered = true;
+          });
+        } else {
+          _showSnack(
+              '⚠️ This device is already registered to another employee ($registeredEmployee).');
+        }
+      }
+
       setState(() {
-        isDeviceRegistered = true;
+        isLoadingDevice = false;
       });
+    } catch (e) {
+      setState(() {
+        isLoadingDevice = false;
+      });
+      _showSnack('Error checking device registration: $e');
     }
   }
 
@@ -488,7 +500,7 @@ class _AttendancePageState extends State<AttendancePage> {
   @override
   Widget build(BuildContext context) {
     final timeStr = formatSeconds(elapsed.inSeconds);
-    final isRegisterEnabled = !isDeviceRegistered;
+    final isRegisterEnabled = !isDeviceRegistered && !isLoadingDevice;
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -498,10 +510,7 @@ class _AttendancePageState extends State<AttendancePage> {
           icon: Transform(
             alignment: Alignment.center,
             transform: Matrix4.rotationY(3.1416),
-            child: const Icon(
-              Icons.logout,
-              color: Colors.white,
-            ),
+            child: const Icon(Icons.logout, color: Colors.white),
           ),
           onPressed: _logout,
           tooltip: 'Logout',
@@ -516,77 +525,91 @@ class _AttendancePageState extends State<AttendancePage> {
       body: Center(
         child: Padding(
           padding: const EdgeInsets.all(25.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                'Today\'s Attendance',
-                style: TextStyle(
-                    fontSize: 22,
-                    color: primaryColor,
-                    fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 25),
-              Text(
-                'Time Spent: $timeStr',
-                style: TextStyle(
-                    fontSize: 28,
-                    fontWeight: FontWeight.bold,
-                    color: primaryColor),
-              ),
-              const SizedBox(height: 50),
-              ElevatedButton(
-                onPressed: isRegisterEnabled ? _registerDevice : null,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor:
-                      isRegisterEnabled ? primaryColor : Colors.grey[400],
-                  foregroundColor: accentColor,
-                  minimumSize: const Size(200, 50),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
+          child: isLoadingDevice
+              ? const CircularProgressIndicator()
+              : Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      'Today\'s Attendance',
+                      style: TextStyle(
+                        fontSize: 22,
+                        color: primaryColor,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 25),
+                    Text(
+                      'Time Spent: $timeStr',
+                      style: TextStyle(
+                        fontSize: 28,
+                        fontWeight: FontWeight.bold,
+                        color: primaryColor,
+                      ),
+                    ),
+                    const SizedBox(height: 50),
+                    ElevatedButton(
+                      onPressed: isRegisterEnabled ? _registerDevice : null,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: isRegisterEnabled
+                            ? primaryColor
+                            : Colors.grey[400],
+                        foregroundColor: accentColor,
+                        minimumSize: const Size(200, 50),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: Text(
+                        isDeviceRegistered
+                            ? 'Device Registered'
+                            : 'Register Device',
+                        style: const TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    ElevatedButton(
+                      onPressed:
+                          (!isCheckedIn && isDeviceRegistered) ? _checkIn : null,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: (!isCheckedIn && isDeviceRegistered)
+                            ? primaryColor
+                            : Colors.grey[400],
+                        foregroundColor: accentColor,
+                        minimumSize: const Size(200, 50),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: const Text(
+                        'Check In',
+                        style:
+                            TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    ElevatedButton(
+                      onPressed: (isCheckedIn && !isCheckedOut) ? _checkOut : null,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor:
+                            (isCheckedIn && !isCheckedOut)
+                                ? primaryColor
+                                : Colors.grey[400],
+                        foregroundColor: accentColor,
+                        minimumSize: const Size(200, 50),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: const Text(
+                        'Check Out',
+                        style:
+                            TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
                 ),
-                child: Text(
-                  isDeviceRegistered
-                      ? 'Device Registered'
-                      : 'Register Device',
-                  style: const TextStyle(
-                      fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-              ),
-              const SizedBox(height: 20),
-              ElevatedButton(
-                onPressed:
-                    (!isCheckedIn && isDeviceRegistered) ? _checkIn : null,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: (!isCheckedIn && isDeviceRegistered)
-                      ? primaryColor
-                      : Colors.grey[400],
-                  foregroundColor: accentColor,
-                  minimumSize: const Size(200, 50),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
-                child: const Text('Check In',
-                    style:
-                        TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              ),
-              const SizedBox(height: 20),
-              ElevatedButton(
-                onPressed: (isCheckedIn && !isCheckedOut) ? _checkOut : null,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor:
-                      (isCheckedIn && !isCheckedOut) ? primaryColor : Colors.grey[400],
-                  foregroundColor: accentColor,
-                  minimumSize: const Size(200, 50),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
-                child: const Text('Check Out',
-                    style:
-                        TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              ),
-            ],
-          ),
         ),
       ),
     );
