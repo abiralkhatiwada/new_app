@@ -142,37 +142,55 @@ class _AttendancePageState extends State<AttendancePage> {
     return newId;
   }
 
-  // ---------------- Device Registration Status ----------------
-  Future<void> _checkDeviceRegistration() async {
-    try {
-      final deviceId = await getDeviceId();
-      final deviceDoc = await FirebaseFirestore.instance
-          .collection('devices')
-          .doc(deviceId)
-          .get();
+ // ---------------- Device Registration Status ----------------
+Future<void> _checkDeviceRegistration() async {
+  try {
+    final deviceId = await getDeviceId();
+    final deviceRef =
+        FirebaseFirestore.instance.collection('devices').doc(deviceId);
+    final deviceDoc = await deviceRef.get();
 
-      if (deviceDoc.exists) {
-        final registeredEmployee = deviceDoc.data()?['employee_id'];
-        if (registeredEmployee == widget.employeeId) {
-          setState(() {
-            isDeviceRegistered = true;
-          });
-        } else {
-          _showSnack(
-              '⚠️ This device is already registered to another employee ($registeredEmployee).');
-        }
+    if (deviceDoc.exists) {
+      // Device is already registered
+      final registeredEmployee = deviceDoc.data()?['employee_id'];
+
+      if (registeredEmployee == widget.employeeId) {
+        // Device belongs to this employee → all good
+        setState(() {
+          isDeviceRegistered = true;
+        });
+        _showSnack('✅ Device already registered to you.');
+      } else {
+        // Device belongs to someone else → block registration
+        _showSnack(
+          '⚠️ This device is already registered to another employee ($registeredEmployee). Registration denied.',
+        );
       }
+    } else {
+      // Device not yet registered → register once
+      await deviceRef.set({
+        'employee_id': widget.employeeId,
+        'registered_at': DateTime.now().toIso8601String(),
+      });
 
       setState(() {
-        isLoadingDevice = false;
+        isDeviceRegistered = true;
       });
-    } catch (e) {
-      setState(() {
-        isLoadingDevice = false;
-      });
-      _showSnack('Error checking device registration: $e');
+
+      _showSnack('✅ Device successfully registered.');
     }
+  } catch (e) {
+    setState(() {
+      isLoadingDevice = false;
+    });
+    _showSnack('❌ Error checking device registration: $e');
+  } finally {
+    setState(() {
+      isLoadingDevice = false;
+    });
   }
+}
+
 
   // ---------------- Permission ----------------
   Future<bool> requestLocationPermission() async {
