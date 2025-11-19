@@ -12,6 +12,7 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import '../pages/login_page.dart';
+import '../admin/admin_notifications_sender.dart'; // Admin page
 
 class AttendancePage extends StatefulWidget {
   final String employeeId;
@@ -37,9 +38,15 @@ class _AttendancePageState extends State<AttendancePage> {
   Timer? _autoLogoutTimer;
   DateTime? checkInTime;
 
-  final Color primaryColor = const Color(0xFF4E2780);
-  final Color accentColor = const Color(0xFFFFDE59);
+  // Admin 8-second tap
+  Timer? _adminTapTimer;
+  bool _isAdminTimerActive = false;
+
+  final Color primaryColor = const Color(0xFF4E2780); // Deep Purple
+  final Color accentColor = const Color(0xFFFFDE59); // Bright Yellow/Gold
   final String officeSsid = "INFIVITY";
+
+  int unreadNotificationCount = 0;
 
   @override
   void initState() {
@@ -60,6 +67,11 @@ class _AttendancePageState extends State<AttendancePage> {
         .where('isRead', isEqualTo: false)
         .snapshots()
         .listen((snapshot) {
+      int count = snapshot.docs.length;
+      setState(() {
+        unreadNotificationCount = count;
+      });
+
       for (var change in snapshot.docChanges) {
         if (change.type == DocumentChangeType.added) {
           final data = change.doc.data();
@@ -115,6 +127,7 @@ class _AttendancePageState extends State<AttendancePage> {
   void dispose() {
     timer?.cancel();
     _autoLogoutTimer?.cancel();
+    _adminTapTimer?.cancel();
     super.dispose();
   }
 
@@ -142,55 +155,50 @@ class _AttendancePageState extends State<AttendancePage> {
     return newId;
   }
 
- // ---------------- Device Registration Status ----------------
-Future<void> _checkDeviceRegistration() async {
-  try {
-    final deviceId = await getDeviceId();
-    final deviceRef =
-        FirebaseFirestore.instance.collection('devices').doc(deviceId);
-    final deviceDoc = await deviceRef.get();
+  // ---------------- Device Registration Status ----------------
+  Future<void> _checkDeviceRegistration() async {
+    try {
+      final deviceId = await getDeviceId();
+      final deviceRef =
+          FirebaseFirestore.instance.collection('devices').doc(deviceId);
+      final deviceDoc = await deviceRef.get();
 
-    if (deviceDoc.exists) {
-      // Device is already registered
-      final registeredEmployee = deviceDoc.data()?['employee_id'];
+      if (deviceDoc.exists) {
+        final registeredEmployee = deviceDoc.data()?['employee_id'];
 
-      if (registeredEmployee == widget.employeeId) {
-        // Device belongs to this employee → all good
+        if (registeredEmployee == widget.employeeId) {
+          setState(() {
+            isDeviceRegistered = true;
+          });
+          _showSnack('✅ Device already registered to you.');
+        } else {
+          _showSnack(
+            '⚠️ This device is already registered to another employee ($registeredEmployee). Registration denied.',
+          );
+        }
+      } else {
+        await deviceRef.set({
+          'employee_id': widget.employeeId,
+          'registered_at': DateTime.now().toIso8601String(),
+        });
+
         setState(() {
           isDeviceRegistered = true;
         });
-        _showSnack('✅ Device already registered to you.');
-      } else {
-        // Device belongs to someone else → block registration
-        _showSnack(
-          '⚠️ This device is already registered to another employee ($registeredEmployee). Registration denied.',
-        );
+
+        _showSnack('✅ Device successfully registered.');
       }
-    } else {
-      // Device not yet registered → register once
-      await deviceRef.set({
-        'employee_id': widget.employeeId,
-        'registered_at': DateTime.now().toIso8601String(),
-      });
-
+    } catch (e) {
       setState(() {
-        isDeviceRegistered = true;
+        isLoadingDevice = false;
       });
-
-      _showSnack('✅ Device successfully registered.');
+      _showSnack('❌ Error checking device registration: $e');
+    } finally {
+      setState(() {
+        isLoadingDevice = false;
+      });
     }
-  } catch (e) {
-    setState(() {
-      isLoadingDevice = false;
-    });
-    _showSnack('❌ Error checking device registration: $e');
-  } finally {
-    setState(() {
-      isLoadingDevice = false;
-    });
   }
-}
-
 
   // ---------------- Permission ----------------
   Future<bool> requestLocationPermission() async {
@@ -230,7 +238,8 @@ Future<void> _checkDeviceRegistration() async {
             elapsed = DateTime.now().difference(checkInTime!);
           });
 
-          timer = Timer.periodic(const Duration(seconds: 1), (_) {
+          // UPDATE: Timer runs every 50 milliseconds to update milliseconds in the UI
+          timer = Timer.periodic(const Duration(milliseconds: 50), (_) {
             setState(() {
               elapsed = DateTime.now().difference(checkInTime!);
             });
@@ -366,7 +375,8 @@ Future<void> _checkDeviceRegistration() async {
         isCheckedIn = true;
         checkInTime = DateTime.now();
         elapsed = Duration.zero;
-        timer = Timer.periodic(const Duration(seconds: 1), (_) {
+        // UPDATE: Timer runs every 50 milliseconds to update milliseconds in the UI
+        timer = Timer.periodic(const Duration(milliseconds: 50), (_) {
           setState(() {
             elapsed = DateTime.now().difference(checkInTime!);
           });
@@ -425,6 +435,7 @@ Future<void> _checkDeviceRegistration() async {
         elapsed = Duration(seconds: totalSeconds);
       });
 
+      // summary message uses the total seconds format (no milliseconds)
       _showSnack('✅ Checked out! Total time: ${formatSeconds(totalSeconds)}');
     } catch (e) {
       _showSnack('Check-out failed: $e');
@@ -432,6 +443,8 @@ Future<void> _checkDeviceRegistration() async {
   }
 
   // ---------------- Helpers ----------------
+
+  /// Formats the total seconds into HH:MM:SS string (used for summary/checkout).
   String formatSeconds(int totalSeconds) {
     final hours = totalSeconds ~/ 3600;
     final minutes = (totalSeconds % 3600) ~/ 60;
@@ -440,90 +453,238 @@ Future<void> _checkDeviceRegistration() async {
     return '${twoDigits(hours)}:${twoDigits(minutes)}:${twoDigits(seconds)}';
   }
 
+  /// Formats the current elapsed Duration into HH:MM:SS.MMM string (used for live timer).
+  String _formatElapsedDuration(Duration duration) {
+    final hours = duration.inHours;
+    final minutes = duration.inMinutes.remainder(60);
+    final seconds = duration.inSeconds.remainder(60);
+    // Calculate remaining milliseconds (0-999)
+    final milliseconds = duration.inMilliseconds.remainder(1000);
+
+    String twoDigits(int n) => n.toString().padLeft(2, '0');
+    String threeDigits(int n) => n.toString().padLeft(3, '0').substring(0, 2);
+
+    // Format: HH:MM:SS.MMM
+    return '${twoDigits(hours)}:${twoDigits(minutes)}:${twoDigits(seconds)}.${threeDigits(milliseconds)}';
+  }
+
   void _showSnack(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(msg),
         backgroundColor: primaryColor,
         behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
       ),
     );
   }
 
-  // ---------------- Notification Widget ----------------
+  // ---------------- Custom UI Widgets ----------------
+
+  Widget _buildStatusChip(String label, IconData icon, Color color) {
+    return Chip(
+      avatar: Icon(icon, color: Colors.white, size: 18),
+      label: Text(
+        label,
+        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+      ),
+      backgroundColor: color,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+      ),
+    );
+  }
+
+  Widget _buildAttendanceTimer(String timeStr) {
+    return Card(
+      elevation: 15,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+      ),
+      shadowColor: primaryColor.withOpacity(0.5),
+      child: Container(
+        padding: const EdgeInsets.all(30),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          gradient: LinearGradient(
+            colors: [primaryColor.withOpacity(0.9), primaryColor],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
+        child: Column(
+          children: [
+            Text(
+              'TOTAL TIME SPENT',
+              style: TextStyle(
+                fontSize: 14,
+                color: accentColor.withOpacity(0.8),
+                letterSpacing: 2,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              timeStr,
+              style: TextStyle(
+                fontSize: 40, // Slightly reduced font size to fit milliseconds
+                fontWeight: FontWeight.w900,
+                color: accentColor,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildActionButton({
+    required String text,
+    required VoidCallback? onPressed,
+    required Color color,
+    required IconData icon,
+  }) {
+    final bool isEnabled = onPressed != null;
+
+    return Container(
+      width: double.infinity,
+      height: 60,
+      margin: const EdgeInsets.symmetric(vertical: 8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(15),
+        boxShadow: isEnabled
+            ? [
+                BoxShadow(
+                  color: color.withOpacity(0.4),
+                  spreadRadius: 1,
+                  blurRadius: 10,
+                  offset: const Offset(0, 5),
+                ),
+              ]
+            : [],
+      ),
+      child: ElevatedButton.icon(
+        onPressed: onPressed,
+        icon: Icon(icon, color: isEnabled ? primaryColor : const Color.fromARGB(179, 0, 0, 0)),
+        label: Text(
+          text,
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+            color: isEnabled ? primaryColor : const Color.fromARGB(179, 0, 0, 0),
+          ),
+        ),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: isEnabled ? accentColor : const Color.fromARGB(255, 132, 94, 94),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(15),
+          ),
+          elevation: isEnabled ? 8 : 0,
+        ),
+      ),
+    );
+  }
+
+  // ---------------- Notification Icon with Admin 8-sec tap ----------------
   Widget _buildNotificationIcon() {
-    final notificationsStream = FirebaseFirestore.instance
-        .collection('employees')
-        .doc(widget.employeeId)
-        .collection('notifications')
-        .where('isRead', isEqualTo: false)
-        .snapshots();
-
-    return StreamBuilder<QuerySnapshot>(
-      stream: notificationsStream,
-      builder: (context, snapshot) {
-        int unreadCount = 0;
-        if (snapshot.hasData) {
-          unreadCount = snapshot.data!.docs.length;
-        }
-
-        return Padding(
-          padding: const EdgeInsets.only(right: 16.0, top: 8.0),
-          child: Stack(
-            clipBehavior: Clip.none,
-            children: [
-              IconButton(
-                icon: const Icon(Icons.notifications, size: 30, color: Colors.white),
-                onPressed: () {
+    return Padding(
+      padding: const EdgeInsets.only(right: 16.0, top: 8.0),
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          GestureDetector(
+            onTapDown: (_) {
+              if (!_isAdminTimerActive) {
+                _isAdminTimerActive = true;
+                _adminTapTimer = Timer(const Duration(seconds: 8), () {
+                  _isAdminTimerActive = false;
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (context) =>
-                          NotificationPage(userId: widget.employeeId),
-                    ),
+                        builder: (_) => const SendNotificationPage()),
                   );
-                },
-              ),
-              if (unreadCount > 0)
-                Positioned(
-                  right: 6,
-                  top: 6,
-                  child: Container(
-                    padding: const EdgeInsets.all(3),
-                    decoration: const BoxDecoration(
-                      color: Colors.red,
-                      shape: BoxShape.circle,
-                    ),
-                    constraints:
-                        const BoxConstraints(minWidth: 16, minHeight: 16),
-                    child: Text(
-                      unreadCount > 99 ? '99+' : '$unreadCount',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                ),
-            ],
+                });
+              }
+            },
+            onTapUp: (_) {
+              // If user releases before 8 seconds → cancel admin timer
+              if (_isAdminTimerActive) {
+                _adminTapTimer?.cancel();
+                _isAdminTimerActive = false;
+                // Normal notification page
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (context) =>
+                          NotificationPage(userId: widget.employeeId)),
+                );
+              }
+            },
+            onTapCancel: () {
+              if (_isAdminTimerActive) {
+                _adminTapTimer?.cancel();
+                _isAdminTimerActive = false;
+              }
+            },
+            child: const Icon(Icons.notifications, size: 30, color: Colors.white),
           ),
-        );
-      },
+          if (unreadNotificationCount > 0)
+            Positioned(
+              right: 2,
+              top: 2,
+              child: Container(
+                padding: const EdgeInsets.all(4),
+                decoration: const BoxDecoration(
+                  color: Colors.redAccent,
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black26,
+                      blurRadius: 3,
+                      offset: Offset(0, 2),
+                    )
+                  ],
+                ),
+                constraints:
+                    const BoxConstraints(minWidth: 20, minHeight: 20),
+                child: Text(
+                  unreadNotificationCount > 99
+                      ? '99+'
+                      : '$unreadNotificationCount',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 
   // ---------------- UI ----------------
   @override
   Widget build(BuildContext context) {
-    final timeStr = formatSeconds(elapsed.inSeconds);
+    // UPDATED: Use the new formatter for the live elapsed duration display
+    final timeStr = _formatElapsedDuration(elapsed);
     final isRegisterEnabled = !isDeviceRegistered && !isLoadingDevice;
 
+    // Determine status colors for the check-in/out buttons
+    final checkInButtonColor = isCheckedIn ? Colors.grey : primaryColor;
+    final checkOutButtonColor =
+        (isCheckedIn && !isCheckedOut) ? Colors.redAccent : Colors.grey;
+    final registerButtonColor = isDeviceRegistered ? Colors.green : primaryColor;
+
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: Colors.grey[50], // Light background for contrast
       appBar: AppBar(
         backgroundColor: primaryColor,
+        elevation: 0, // Flat app bar looks cleaner
         leading: IconButton(
           icon: Transform(
             alignment: Alignment.center,
@@ -534,102 +695,98 @@ Future<void> _checkDeviceRegistration() async {
           tooltip: 'Logout',
         ),
         title: Text(
-          'Welcome, ${widget.employeeName}',
-          style: TextStyle(color: accentColor),
+          'Hi, ${widget.employeeName.split(' ').first}',
+          style: TextStyle(color: accentColor, fontWeight: FontWeight.w600),
         ),
         centerTitle: true,
         actions: [_buildNotificationIcon()],
       ),
       body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(25.0),
-          child: isLoadingDevice
-              ? const CircularProgressIndicator()
-              : Column(
+        child: isLoadingDevice
+            ? CircularProgressIndicator(color: primaryColor)
+            : SingleChildScrollView(
+                padding: const EdgeInsets.all(25.0),
+                child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Text(
-                      'Today\'s Attendance',
-                      style: TextStyle(
-                        fontSize: 22,
-                        color: primaryColor,
-                        fontWeight: FontWeight.bold,
-                      ),
+                    // --- Status Indicators ---
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      alignment: WrapAlignment.center,
+                      children: [
+                        // Device Registration Status
+                        _buildStatusChip(
+                          isDeviceRegistered
+                              ? 'Device Registered'
+                              : 'Device Not Registered',
+                          isDeviceRegistered ? Icons.security : Icons.warning,
+                          isDeviceRegistered ? Colors.green : Colors.orange,
+                        ),
+                        // Attendance Status
+                        _buildStatusChip(
+                          isCheckedOut
+                              ? 'Day Completed'
+                              : isCheckedIn
+                                  ? 'Checked In'
+                                  : 'Awaiting Check-in',
+                          isCheckedOut
+                              ? Icons.done_all
+                              : isCheckedIn
+                                  ? Icons.access_time_filled
+                                  : Icons.info_outline,
+                          isCheckedOut
+                              ? Colors.blueAccent
+                              : isCheckedIn
+                                  ? Colors.deepOrange
+                                  : primaryColor.withOpacity(0.7),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 25),
-                    Text(
-                      'Time Spent: $timeStr',
-                      style: TextStyle(
-                        fontSize: 28,
-                        fontWeight: FontWeight.bold,
-                        color: primaryColor,
-                      ),
-                    ),
-                    const SizedBox(height: 50),
-                    ElevatedButton(
+                    const SizedBox(height: 40),
+
+                    // --- Timer Display Card ---
+                    _buildAttendanceTimer(timeStr),
+                    const SizedBox(height: 40),
+
+                    // --- Action Buttons ---
+
+                    // 1. Register Device Button
+                    _buildActionButton(
+                      text: isDeviceRegistered
+                          ? 'Device Registered'
+                          : 'Register Device',
                       onPressed: isRegisterEnabled ? _registerDevice : null,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: isRegisterEnabled
-                            ? primaryColor
-                            : Colors.grey[400],
-                        foregroundColor: accentColor,
-                        minimumSize: const Size(200, 50),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      child: Text(
-                        isDeviceRegistered
-                            ? 'Device Registered'
-                            : 'Register Device',
-                        style: const TextStyle(
-                            fontSize: 18, fontWeight: FontWeight.bold),
-                      ),
+                      color: registerButtonColor,
+                      icon: isDeviceRegistered
+                          ? Icons.check_circle_outline
+                          : Icons.phone_android,
                     ),
-                    const SizedBox(height: 20),
-                    ElevatedButton(
+
+                    // 2. Check In Button
+                    _buildActionButton(
+                      text: 'Check In',
+                      onPressed: (!isCheckedIn && isDeviceRegistered)
+                          ? _checkIn
+                          : null,
+                      color: checkInButtonColor,
+                      icon: Icons.login,
+                    ),
+
+                    // 3. Check Out Button
+                    _buildActionButton(
+                      text: 'Check Out',
                       onPressed:
-                          (!isCheckedIn && isDeviceRegistered) ? _checkIn : null,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: (!isCheckedIn && isDeviceRegistered)
-                            ? primaryColor
-                            : Colors.grey[400],
-                        foregroundColor: accentColor,
-                        minimumSize: const Size(200, 50),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      child: const Text(
-                        'Check In',
-                        style:
-                            TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    ElevatedButton(
-                      onPressed: (isCheckedIn && !isCheckedOut) ? _checkOut : null,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor:
-                            (isCheckedIn && !isCheckedOut)
-                                ? primaryColor
-                                : Colors.grey[400],
-                        foregroundColor: accentColor,
-                        minimumSize: const Size(200, 50),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      child: const Text(
-                        'Check Out',
-                        style:
-                            TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                      ),
+                          (isCheckedIn && !isCheckedOut) ? _checkOut : null,
+                      color: checkOutButtonColor,
+                      icon: Icons.logout,
                     ),
                   ],
                 ),
-        ),
+              ),
       ),
     );
   }
 }
+
