@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui'; 
 import 'package:Infivity/notifications_page.dart';
 import 'package:Infivity/services/in_app_notification_service.dart';
 import 'package:Infivity/services/wifi_service.dart';
@@ -12,7 +13,8 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import '../pages/login_page.dart';
-import '../admin/admin_notifications_sender.dart'; // Admin page
+import '../admin/admin_notifications_sender.dart'; 
+import 'profile_page.dart'; 
 
 class AttendancePage extends StatefulWidget {
   final String employeeId;
@@ -55,11 +57,9 @@ class _AttendancePageState extends State<AttendancePage> {
     _checkDeviceRegistration();
     _checkTodayStatus();
 
-    // Save FCM token
-    final _notificationService = InAppNotificationService();
-    _notificationService.saveToken(widget.employeeId);
+    final notificationService = InAppNotificationService();
+    notificationService.saveToken(widget.employeeId);
 
-    // Listen to Firestore in-app notifications
     FirebaseFirestore.instance
         .collection('employees')
         .doc(widget.employeeId)
@@ -115,6 +115,8 @@ class _AttendancePageState extends State<AttendancePage> {
   Future<void> _logout() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('lastActiveDate');
+
+    if (!mounted) return;
 
     Navigator.pushAndRemoveUntil(
       context,
@@ -238,11 +240,12 @@ class _AttendancePageState extends State<AttendancePage> {
             elapsed = DateTime.now().difference(checkInTime!);
           });
 
-          // UPDATE: Timer runs every 50 milliseconds to update milliseconds in the UI
           timer = Timer.periodic(const Duration(milliseconds: 50), (_) {
-            setState(() {
-              elapsed = DateTime.now().difference(checkInTime!);
-            });
+            if (mounted) {
+              setState(() {
+                elapsed = DateTime.now().difference(checkInTime!);
+              });
+            }
           });
         } else if (checkIn != null && checkOut != null) {
           setState(() {
@@ -375,11 +378,12 @@ class _AttendancePageState extends State<AttendancePage> {
         isCheckedIn = true;
         checkInTime = DateTime.now();
         elapsed = Duration.zero;
-        // UPDATE: Timer runs every 50 milliseconds to update milliseconds in the UI
         timer = Timer.periodic(const Duration(milliseconds: 50), (_) {
-          setState(() {
-            elapsed = DateTime.now().difference(checkInTime!);
-          });
+          if (mounted) {
+            setState(() {
+              elapsed = DateTime.now().difference(checkInTime!);
+            });
+          }
         });
       });
 
@@ -435,7 +439,6 @@ class _AttendancePageState extends State<AttendancePage> {
         elapsed = Duration(seconds: totalSeconds);
       });
 
-      // summary message uses the total seconds format (no milliseconds)
       _showSnack('✅ Checked out! Total time: ${formatSeconds(totalSeconds)}');
     } catch (e) {
       _showSnack('Check-out failed: $e');
@@ -444,7 +447,6 @@ class _AttendancePageState extends State<AttendancePage> {
 
   // ---------------- Helpers ----------------
 
-  /// Formats the total seconds into HH:MM:SS string (used for summary/checkout).
   String formatSeconds(int totalSeconds) {
     final hours = totalSeconds ~/ 3600;
     final minutes = (totalSeconds % 3600) ~/ 60;
@@ -453,22 +455,20 @@ class _AttendancePageState extends State<AttendancePage> {
     return '${twoDigits(hours)}:${twoDigits(minutes)}:${twoDigits(seconds)}';
   }
 
-  /// Formats the current elapsed Duration into HH:MM:SS.MMM string (used for live timer).
   String _formatElapsedDuration(Duration duration) {
     final hours = duration.inHours;
     final minutes = duration.inMinutes.remainder(60);
     final seconds = duration.inSeconds.remainder(60);
-    // Calculate remaining milliseconds (0-999)
     final milliseconds = duration.inMilliseconds.remainder(1000);
 
     String twoDigits(int n) => n.toString().padLeft(2, '0');
     String threeDigits(int n) => n.toString().padLeft(3, '0').substring(0, 2);
 
-    // Format: HH:MM:SS.MMM
     return '${twoDigits(hours)}:${twoDigits(minutes)}:${twoDigits(seconds)}.${threeDigits(milliseconds)}';
   }
 
   void _showSnack(String msg) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(msg),
@@ -528,7 +528,7 @@ class _AttendancePageState extends State<AttendancePage> {
             Text(
               timeStr,
               style: TextStyle(
-                fontSize: 40, // Slightly reduced font size to fit milliseconds
+                fontSize: 40,
                 fontWeight: FontWeight.w900,
                 color: accentColor,
                 fontFeatures: const [FontFeature.tabularFigures()],
@@ -567,7 +567,8 @@ class _AttendancePageState extends State<AttendancePage> {
       ),
       child: ElevatedButton.icon(
         onPressed: onPressed,
-        icon: Icon(icon, color: isEnabled ? primaryColor : const Color.fromARGB(179, 0, 0, 0)),
+        icon: Icon(icon,
+            color: isEnabled ? primaryColor : const Color.fromARGB(179, 0, 0, 0)),
         label: Text(
           text,
           style: TextStyle(
@@ -577,7 +578,8 @@ class _AttendancePageState extends State<AttendancePage> {
           ),
         ),
         style: ElevatedButton.styleFrom(
-          backgroundColor: isEnabled ? accentColor : const Color.fromARGB(255, 132, 94, 94),
+          backgroundColor:
+              isEnabled ? accentColor : const Color.fromARGB(255, 132, 94, 94),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(15),
           ),
@@ -587,7 +589,6 @@ class _AttendancePageState extends State<AttendancePage> {
     );
   }
 
-  // ---------------- Notification Icon with Admin 8-sec tap ----------------
   Widget _buildNotificationIcon() {
     return Padding(
       padding: const EdgeInsets.only(right: 16.0, top: 8.0),
@@ -600,26 +601,28 @@ class _AttendancePageState extends State<AttendancePage> {
                 _isAdminTimerActive = true;
                 _adminTapTimer = Timer(const Duration(seconds: 8), () {
                   _isAdminTimerActive = false;
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => const SendNotificationPage()),
-                  );
+                  if (mounted) {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => const SendNotificationPage()),
+                    );
+                  }
                 });
               }
             },
             onTapUp: (_) {
-              // If user releases before 8 seconds → cancel admin timer
               if (_isAdminTimerActive) {
                 _adminTapTimer?.cancel();
                 _isAdminTimerActive = false;
-                // Normal notification page
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                      builder: (context) =>
-                          NotificationPage(userId: widget.employeeId)),
-                );
+                if (mounted) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (context) =>
+                            NotificationPage(userId: widget.employeeId)),
+                  );
+                }
               }
             },
             onTapCancel: () {
@@ -628,7 +631,8 @@ class _AttendancePageState extends State<AttendancePage> {
                 _isAdminTimerActive = false;
               }
             },
-            child: const Icon(Icons.notifications, size: 30, color: Colors.white),
+            child:
+                const Icon(Icons.notifications, size: 30, color: Colors.white),
           ),
           if (unreadNotificationCount > 0)
             Positioned(
@@ -670,35 +674,40 @@ class _AttendancePageState extends State<AttendancePage> {
   // ---------------- UI ----------------
   @override
   Widget build(BuildContext context) {
-    // UPDATED: Use the new formatter for the live elapsed duration display
     final timeStr = _formatElapsedDuration(elapsed);
     final isRegisterEnabled = !isDeviceRegistered && !isLoadingDevice;
 
-    // Determine status colors for the check-in/out buttons
     final checkInButtonColor = isCheckedIn ? Colors.grey : primaryColor;
     final checkOutButtonColor =
         (isCheckedIn && !isCheckedOut) ? Colors.redAccent : Colors.grey;
     final registerButtonColor = isDeviceRegistered ? Colors.green : primaryColor;
 
     return Scaffold(
-      backgroundColor: Colors.grey[50], // Light background for contrast
+      backgroundColor: Colors.grey[50],
       appBar: AppBar(
         backgroundColor: primaryColor,
-        elevation: 0, // Flat app bar looks cleaner
-        leading: IconButton(
-          icon: Transform(
-            alignment: Alignment.center,
-            transform: Matrix4.rotationY(3.1416),
-            child: const Icon(Icons.logout, color: Colors.white),
-          ),
-          onPressed: _logout,
-          tooltip: 'Logout',
-        ),
+        elevation: 0,
         title: Text(
           'Hi, ${widget.employeeName.split(' ').first}',
           style: TextStyle(color: accentColor, fontWeight: FontWeight.w600),
         ),
         centerTitle: true,
+        leading: IconButton(
+          icon: const Icon(Icons.menu, color: Colors.white, size: 28),
+          onPressed: () {
+            // ---------------- CHANGED TO BOTTOM SHEET ----------------
+            showModalBottomSheet(
+              context: context,
+              isScrollControlled: true, // Needed to control height
+              backgroundColor: Colors.transparent, // Lets ProfilePage handle curve
+              builder: (context) => ProfilePage(
+                employeeId: widget.employeeId,
+                employeeName: widget.employeeName,
+              ),
+            );
+            // ---------------------------------------------------------
+          },
+        ),
         actions: [_buildNotificationIcon()],
       ),
       body: Center(
@@ -710,13 +719,11 @@ class _AttendancePageState extends State<AttendancePage> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    // --- Status Indicators ---
                     Wrap(
                       spacing: 10,
                       runSpacing: 10,
                       alignment: WrapAlignment.center,
                       children: [
-                        // Device Registration Status
                         _buildStatusChip(
                           isDeviceRegistered
                               ? 'Device Registered'
@@ -724,7 +731,6 @@ class _AttendancePageState extends State<AttendancePage> {
                           isDeviceRegistered ? Icons.security : Icons.warning,
                           isDeviceRegistered ? Colors.green : Colors.orange,
                         ),
-                        // Attendance Status
                         _buildStatusChip(
                           isCheckedOut
                               ? 'Day Completed'
@@ -745,14 +751,8 @@ class _AttendancePageState extends State<AttendancePage> {
                       ],
                     ),
                     const SizedBox(height: 40),
-
-                    // --- Timer Display Card ---
                     _buildAttendanceTimer(timeStr),
                     const SizedBox(height: 40),
-
-                    // --- Action Buttons ---
-
-                    // 1. Register Device Button
                     _buildActionButton(
                       text: isDeviceRegistered
                           ? 'Device Registered'
@@ -763,8 +763,6 @@ class _AttendancePageState extends State<AttendancePage> {
                           ? Icons.check_circle_outline
                           : Icons.phone_android,
                     ),
-
-                    // 2. Check In Button
                     _buildActionButton(
                       text: 'Check In',
                       onPressed: (!isCheckedIn && isDeviceRegistered)
@@ -773,8 +771,6 @@ class _AttendancePageState extends State<AttendancePage> {
                       color: checkInButtonColor,
                       icon: Icons.login,
                     ),
-
-                    // 3. Check Out Button
                     _buildActionButton(
                       text: 'Check Out',
                       onPressed:
@@ -789,4 +785,3 @@ class _AttendancePageState extends State<AttendancePage> {
     );
   }
 }
-
