@@ -1,6 +1,5 @@
-// lib/models/attendance_model.dart
-
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:intl/intl.dart'; // Import DateFormat for date comparison
 
 class AttendanceRecord {
   final String id;
@@ -10,7 +9,7 @@ class AttendanceRecord {
   final DateTime? checkIn;
   final DateTime? checkOut;
   final int? timeSpentSeconds;
-  final String status; // Derived status ('Present', 'Absent', 'Late', etc.)
+  final String status;
 
   AttendanceRecord({
     required this.id,
@@ -23,39 +22,59 @@ class AttendanceRecord {
     required this.status,
   });
 
-  // Factory constructor to create an AttendanceRecord from a Firestore DocumentSnapshot
   factory AttendanceRecord.fromFirestore(DocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>?;
+    final data = doc.data() as Map<String, dynamic>? ?? {};
 
-    final checkInTs = data?['checkin'] as Timestamp?;
-    final checkOutTs = data?['checkout'] as Timestamp?;
-    final dateStr = data?['date'] as String?;
+    // --- Timestamps and Time Spent ---
+    final checkInTs = data['checkin_time'] as Timestamp?;
+    final checkOutTs = data['checkout_time'] as Timestamp?;
+    final int? timeSpent = (data['time_spent'] as num?)?.toInt();
 
-    // Determine the status (simplified logic for demonstration)
-    String status;
-    if (checkInTs == null) {
-      // NOTE: In a real app, you'd check if the date is today/past and if it was a workday/holiday.
-      status = 'Absent';
-    } else if (checkOutTs == null) {
-      status = 'Present (Active)';
-    } else {
-      // Basic check for lateness (e.g., check-in after 9:00 AM)
-      final checkInTime = checkInTs.toDate();
-      if (checkInTime.hour > 9) {
-        status = 'Late';
+    // --- Parse date safely ---
+    DateTime parsedDate;
+    try {
+      final dateStr = data['date'] as String?;
+      parsedDate = dateStr != null ? DateTime.parse(dateStr) : DateTime.now();
+    } catch (e) {
+      parsedDate = DateTime.now();
+    }
+
+    // --- Convert timestamps ---
+    final checkInDate = checkInTs?.toDate();
+    final checkOutDate = checkOutTs?.toDate();
+    
+    // --- Determine if the record is for Today ---
+    final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
+    final recordDateStr = DateFormat('yyyy-MM-dd').format(parsedDate);
+    final isToday = today == recordDateStr;
+
+    // 🎯 REVISED STATUS LOGIC 🎯
+    String status = 'Absent';
+    if (checkInDate != null) {
+      if (checkOutDate == null) {
+        // SCENARIO 1: Checked In, NO Checkout
+        if (isToday) {
+          // If viewing today's active session: Show 'Present (Active)'
+          status = 'Present (Active)';
+        } else {
+          // If viewing a past date where checkout was missed: Show 'Present (No checkout)'
+          status = 'Present (No checkout)';
+        }
       } else {
+        // SCENARIO 2: Checked In AND Checked Out: Show 'Present'
         status = 'Present';
       }
     }
 
+    // Note: 'id' inside the document might be null, but doc.id is the date string
     return AttendanceRecord(
       id: doc.id,
-      employeeId: data?['id'] ?? '',
-      employeeName: data?['name'] ?? 'N/A',
-      date: dateStr != null ? DateTime.parse(dateStr) : DateTime(2000), // Parse yyyy-MM-dd string
-      checkIn: checkInTs?.toDate(),
-      checkOut: checkOutTs?.toDate(),
-      timeSpentSeconds: data?['time_spent'] as int?,
+      employeeId: data['id'] ?? '', 
+      employeeName: data['name'] ?? 'Unknown',
+      date: parsedDate,
+      checkIn: checkInDate,
+      checkOut: checkOutDate,
+      timeSpentSeconds: timeSpent,
       status: status,
     );
   }

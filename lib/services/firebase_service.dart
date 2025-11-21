@@ -1,243 +1,114 @@
-// lib/services/firebase_service.dart
-
-
+// (File: lib/services/firebase_service.dart)
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-
 import 'package:intl/intl.dart';
-
-import '../models/attendance_model.dart'; // Ensure this path is correct
-
-
+import '../models/attendance_model.dart';
 
 class FirebaseService {
-
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-
-
+  // Helper to get "yyyy-MM-dd" string (e.g., "2025-11-21")
   String _formatDate(DateTime dt) {
-
     return DateFormat('yyyy-MM-dd').format(dt);
-
   }
 
-
-
-  // Attendance doc id: "{employeeId}_{yyyy-MM-dd}"
-
-  String _attendanceDocId(String employeeId, DateTime date) {
-
-    return '${employeeId}_${_formatDate(date)}';
-
-  }
-
-
-
-  // 1) Admin: add employee (id + name) — call once per employee
-
-  Future<void> addEmployee(String id, String name) async {
-
-    final docRef = _firestore.collection('employees').doc(id);
-
-    await docRef.set({
-
-      'id': id,
-
-      'name': name,
-
-    }, SetOptions(merge: true));
-
-  }
-
-
-
-  // 2) Get today's attendance (returns Map or null)
-
-  Future<Map<String, dynamic>?> getTodayStatus(String employeeId) async {
-
-    final now = DateTime.now();
-
-    final docId = _attendanceDocId(employeeId, now);
-
-    final doc = await _firestore.collection('attendance').doc(docId).get();
-
-    if (doc.exists) return doc.data() as Map<String, dynamic>;
-
-    return null;
-
-  }
-
-
-
-  // 3) Check-in: create today's attendance doc only if it doesn't exist
-
-  Future<void> checkIn(String employeeId) async {
-
-    final now = DateTime.now();
-
-    final today = _formatDate(now);
-
-    final docId = _attendanceDocId(employeeId, now);
-
-    final docRef = _firestore.collection('attendance').doc(docId);
-
-
-
-    // Get employee name for storing (optional)
-
-    final empSnap = await _firestore.collection('employees').doc(employeeId).get();
-
-    final empName = empSnap.exists ? (empSnap.data()!['name'] ?? '') : '';
-
-
-
-    // Transaction ensures atomic check
-
-    await _firestore.runTransaction((tx) async {
-
-      final snapshot = await tx.get(docRef);
-
-      if (snapshot.exists) {
-
-        // Already checked in today — do nothing or throw
-
-        throw Exception('Already checked in today');
-
-      } else {
-
-        tx.set(docRef, {
-
-          'id': employeeId,
-
-          'name': empName,
-
-          'date': today,
-
-          'checkin': Timestamp.fromDate(now), // client timestamp
-
-          'checkout': null,
-
-          'time_spent': null, // seconds
-
+  // --- 1. Get Attendance Stream (READING) ---
+  Stream<AttendanceRecord?> getAttendanceForDateStream(
+      String employeeId, DateTime selectedDate) {
+    
+    // The document ID is just the date string (e.g., "2025-11-21")
+    final dateDocId = _formatDate(selectedDate);
+    
+    // Construct the path: employees -> {employeeId} -> attendance -> {dateDocId}
+    return _firestore
+        .collection('employees')       
+        .doc(employeeId)               
+        .collection('attendance')      
+        .doc(dateDocId)                
+        .snapshots()
+        .map((doc) {
+          if (doc.exists) {
+            try {
+              return AttendanceRecord.fromFirestore(doc);
+            } catch (e) {
+              print("Error parsing data: $e");
+              return null; 
+            }
+          }
+          return null;
         });
-
-      }
-
-    });
-
   }
 
-
-
-  // 4) Check-out: update checkout and compute time_spent (seconds)
-
-  Future<void> checkOut(String employeeId) async {
-
+  // --- 2. Check-in (WRITING to Sub-collection) ---
+  Future<void> checkIn(String employeeId) async {
     final now = DateTime.now();
+    final dateDocId = _formatDate(now); 
 
-    final docId = _attendanceDocId(employeeId, now);
-
-    final docRef = _firestore.collection('attendance').doc(docId);
-
-
+    final docRef = _firestore
+        .collection('employees')
+        .doc(employeeId)
+        .collection('attendance')
+        .doc(dateDocId);
 
     await _firestore.runTransaction((tx) async {
-
       final snapshot = await tx.get(docRef);
+      if (snapshot.exists) {
+        throw Exception('Already checked in today');
+      }
+      
+      // 🎯 FIX: Reliably fetch employee name from the parent document 🎯
+      String empName = 'Unknown';
+      try {
+        final empDoc = await _firestore.collection('employees').doc(employeeId).get();
+        if(empDoc.exists) {
+             empName = empDoc.data()?['name'] ?? 'Unknown';
+        }
+      } catch (e) {
+        print("Error fetching employee name: $e");
+      }
+      
+      // Ensure we write both the ID and the fetched Name
+      tx.set(docRef, {
+        'id': employeeId,
+        'name': empName, 
+        'date': dateDocId,
+        'checkin_time': Timestamp.fromDate(now),
+        'checkout_time': null,
+        'time_spent': null,
+      });
+    });
+  }
 
+  // --- 3. Check-out (WRITING to Sub-collection) ---
+  Future<void> checkOut(String employeeId) async {
+    final now = DateTime.now();
+    final dateDocId = _formatDate(now);
+
+    final docRef = _firestore
+        .collection('employees')
+        .doc(employeeId)
+        .collection('attendance')
+        .doc(dateDocId);
+
+    await _firestore.runTransaction((tx) async {
+      final snapshot = await tx.get(docRef);
       if (!snapshot.exists) {
-
         throw Exception('No check-in record found for today');
-
       }
-
+      
       final data = snapshot.data()!;
-
-      if (data['checkout'] != null) {
-
+      if (data['checkout_time'] != null) {
         throw Exception('Already checked out today');
-
       }
 
-
-
-      // read checkin
-
-      final checkinTs = data['checkin'] as Timestamp;
-
-      final checkinDt = checkinTs.toDate();
-
-      final seconds = now.difference(checkinDt).inSeconds;
-
-
+      final checkinTs = data['checkin_time'] as Timestamp;
+      final seconds = now.difference(checkinTs.toDate()).inSeconds;
 
       tx.update(docRef, {
-
-        'checkout': Timestamp.fromDate(now),
-
+        'checkout_time': Timestamp.fromDate(now),
         'time_spent': seconds,
-
       });
-
     });
-
   }
-
-
-
-  // Helper: fetch attendance history for an employee (optional)
-
-  Stream<QuerySnapshot> attendanceStreamForEmployee(String employeeId) {
-
-    return _firestore
-
-      .collection('attendance')
-
-      .where('id', isEqualTo: employeeId)
-
-      .orderBy('date', descending: true)
-
-      .snapshots();
-
-  }
-
   
-
-  // 5) Get Attendance Stream for a specific SINGLE DATE <--- MISSING METHOD ADDED HERE
-
-  Stream<AttendanceRecord?> getAttendanceForDateStream(
-
-      String employeeId, DateTime selectedDate) {
-
-    
-
-    final docId = _attendanceDocId(employeeId, selectedDate);
-
-
-
-    return _firestore
-
-        .collection('attendance')
-
-        .doc(docId)
-
-        .snapshots() // Listen to changes on a single document
-
-        .map((doc) {
-
-      if (doc.exists) {
-
-        // Use the existing factory constructor to create the model
-
-        return AttendanceRecord.fromFirestore(doc);
-
-      }
-
-      return null; // Return null if the document does not exist for the date
-
-    });
-
-  }
-
 }

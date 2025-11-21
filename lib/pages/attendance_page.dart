@@ -1,23 +1,40 @@
 import 'dart:async';
+
 import 'dart:io';
-import 'dart:ui'; 
+
+import 'dart:ui';
+
 import 'package:Infivity/notifications_page.dart';
+
 import 'package:Infivity/services/in_app_notification_service.dart';
+
 import 'package:Infivity/services/wifi_service.dart';
+
 import 'package:flutter/material.dart';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
+
 import 'package:intl/intl.dart';
+
 import 'package:permission_handler/permission_handler.dart';
+
 import 'package:location/location.dart';
+
 import 'package:device_info_plus/device_info_plus.dart';
+
 import 'package:shared_preferences/shared_preferences.dart';
+
 import 'package:uuid/uuid.dart';
+
 import '../pages/login_page.dart';
-import '../admin/admin_notifications_sender.dart'; 
-import 'profile_page.dart'; 
+
+import '../admin/admin_notifications_sender.dart';
+
+import 'profile_page.dart';
 
 class AttendancePage extends StatefulWidget {
   final String employeeId;
+
   final String employeeName;
 
   const AttendancePage({
@@ -32,20 +49,31 @@ class AttendancePage extends StatefulWidget {
 
 class _AttendancePageState extends State<AttendancePage> {
   bool isCheckedIn = false;
+
   bool isCheckedOut = false;
+
   bool isDeviceRegistered = false;
+
   bool isLoadingDevice = true;
+
   Duration elapsed = Duration.zero;
+
   Timer? timer;
+
   Timer? _autoLogoutTimer;
+
   DateTime? checkInTime;
 
   // Admin 8-second tap
+
   Timer? _adminTapTimer;
+
   bool _isAdminTimerActive = false;
 
   final Color primaryColor = const Color(0xFF4E2780); // Deep Purple
+
   final Color accentColor = const Color(0xFFFFDE59); // Bright Yellow/Gold
+
   final String officeSsid = "INFIVITY";
 
   int unreadNotificationCount = 0;
@@ -55,9 +83,11 @@ class _AttendancePageState extends State<AttendancePage> {
     super.initState();
 
     _checkDeviceRegistration();
+
     _checkTodayStatus();
 
     final notificationService = InAppNotificationService();
+
     notificationService.saveToken(widget.employeeId);
 
     FirebaseFirestore.instance
@@ -68,6 +98,7 @@ class _AttendancePageState extends State<AttendancePage> {
         .snapshots()
         .listen((snapshot) {
       int count = snapshot.docs.length;
+
       setState(() {
         unreadNotificationCount = count;
       });
@@ -75,6 +106,7 @@ class _AttendancePageState extends State<AttendancePage> {
       for (var change in snapshot.docChanges) {
         if (change.type == DocumentChangeType.added) {
           final data = change.doc.data();
+
           if (data != null) {
             _showSnack('🔔 ${data['title'] ?? 'New notification'}');
           }
@@ -86,34 +118,46 @@ class _AttendancePageState extends State<AttendancePage> {
   }
 
   // ---------------- Auto Logout ----------------
+
   Future<void> _setupAutoLogout() async {
     final prefs = await SharedPreferences.getInstance();
+
     final today = DateTime.now();
+
     final todayStr = DateFormat('yyyy-MM-dd').format(today);
+
     final lastActiveDate = prefs.getString('lastActiveDate');
 
     if (lastActiveDate != null && lastActiveDate != todayStr) {
       _showSnack('Session expired. Please log in again.');
+
       await prefs.remove('lastActiveDate');
+
       _logout();
+
       return;
     }
 
     await prefs.setString('lastActiveDate', todayStr);
 
     final midnight = DateTime(today.year, today.month, today.day + 1);
+
     final durationUntilMidnight = midnight.difference(today);
 
     _autoLogoutTimer = Timer(durationUntilMidnight, () async {
       _showSnack('Session ended. You have been logged out automatically.');
+
       await prefs.remove('lastActiveDate');
+
       _logout();
     });
   }
 
   // ---------------- Logout Function ----------------
+
   Future<void> _logout() async {
     final prefs = await SharedPreferences.getInstance();
+
     await prefs.remove('lastActiveDate');
 
     if (!mounted) return;
@@ -128,41 +172,53 @@ class _AttendancePageState extends State<AttendancePage> {
   @override
   void dispose() {
     timer?.cancel();
+
     _autoLogoutTimer?.cancel();
+
     _adminTapTimer?.cancel();
+
     super.dispose();
   }
 
   // ---------------- Device ID ----------------
+
   Future<String> getDeviceId() async {
     final prefs = await SharedPreferences.getInstance();
 
     String? savedId = prefs.getString('device_id');
+
     if (savedId != null) return savedId;
 
     final deviceInfo = DeviceInfoPlugin();
+
     String newId;
 
     if (Platform.isAndroid) {
       final androidInfo = await deviceInfo.androidInfo;
+
       newId = '${androidInfo.model}_${const Uuid().v4()}';
     } else if (Platform.isIOS) {
       final iosInfo = await deviceInfo.iosInfo;
+
       newId = iosInfo.identifierForVendor ?? const Uuid().v4();
     } else {
       newId = const Uuid().v4();
     }
 
     await prefs.setString('device_id', newId);
+
     return newId;
   }
 
   // ---------------- Device Registration Status ----------------
+
   Future<void> _checkDeviceRegistration() async {
     try {
       final deviceId = await getDeviceId();
+
       final deviceRef =
           FirebaseFirestore.instance.collection('devices').doc(deviceId);
+
       final deviceDoc = await deviceRef.get();
 
       if (deviceDoc.exists) {
@@ -172,6 +228,7 @@ class _AttendancePageState extends State<AttendancePage> {
           setState(() {
             isDeviceRegistered = true;
           });
+
           _showSnack('✅ Device already registered to you.');
         } else {
           _showSnack(
@@ -194,6 +251,7 @@ class _AttendancePageState extends State<AttendancePage> {
       setState(() {
         isLoadingDevice = false;
       });
+
       _showSnack('❌ Error checking device registration: $e');
     } finally {
       setState(() {
@@ -203,17 +261,22 @@ class _AttendancePageState extends State<AttendancePage> {
   }
 
   // ---------------- Permission ----------------
+
   Future<bool> requestLocationPermission() async {
     var status = await Permission.location.status;
+
     if (status.isDenied || status.isRestricted) {
       status = await Permission.location.request();
     }
+
     return status.isGranted;
   }
 
   // ---------------- Load Today's Attendance ----------------
+
   Future<void> _checkTodayStatus() async {
     final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
+
     final docRef = FirebaseFirestore.instance
         .collection('employees')
         .doc(widget.employeeId)
@@ -222,21 +285,28 @@ class _AttendancePageState extends State<AttendancePage> {
 
     try {
       final doc = await docRef.get();
+
       if (doc.exists) {
         final data = doc.data()!;
+
         final checkIn = data['checkin_time'] != null
             ? (data['checkin_time'] as Timestamp).toDate()
             : null;
+
         final checkOut = data['checkout_time'] != null
             ? (data['checkout_time'] as Timestamp).toDate()
             : null;
+
         final spent = data['time_spent'] ?? 0;
 
         if (checkIn != null && checkOut == null) {
           setState(() {
             isCheckedIn = true;
+
             isCheckedOut = false;
+
             checkInTime = checkIn;
+
             elapsed = DateTime.now().difference(checkInTime!);
           });
 
@@ -250,7 +320,9 @@ class _AttendancePageState extends State<AttendancePage> {
         } else if (checkIn != null && checkOut != null) {
           setState(() {
             isCheckedIn = true;
+
             isCheckedOut = true;
+
             elapsed = Duration(seconds: spent);
           });
         }
@@ -261,15 +333,19 @@ class _AttendancePageState extends State<AttendancePage> {
   }
 
   // ---------------- Register Device ----------------
+
   Future<void> _registerDevice() async {
     if (isDeviceRegistered) {
       _showSnack('This device is already registered for you.');
+
       return;
     }
 
     try {
       final deviceId = await getDeviceId();
+
       final employeeId = widget.employeeId;
+
       final employeeName = widget.employeeName;
 
       final deviceDocRef =
@@ -279,15 +355,18 @@ class _AttendancePageState extends State<AttendancePage> {
 
       if (deviceDoc.exists) {
         final registeredTo = deviceDoc.data()?['employee_id'];
+
         if (registeredTo == employeeId) {
           setState(() {
             isDeviceRegistered = true;
           });
+
           _showSnack('This device is already registered for you.');
         } else {
           _showSnack(
               '❌ This device is already registered to another employee ($registeredTo).');
         }
+
         return;
       }
 
@@ -315,14 +394,17 @@ class _AttendancePageState extends State<AttendancePage> {
   }
 
   // ---------------- Check In ----------------
+
   Future<void> _checkIn() async {
     if (!isDeviceRegistered) {
       _showSnack('Please register your device before checking in.');
+
       return;
     }
 
     try {
       final deviceId = await getDeviceId();
+
       final deviceDoc = await FirebaseFirestore.instance
           .collection('devices')
           .doc(deviceId)
@@ -331,21 +413,28 @@ class _AttendancePageState extends State<AttendancePage> {
       if (!deviceDoc.exists ||
           deviceDoc.data()?['employee_id'] != widget.employeeId) {
         _showSnack('❌ This device is not authorized for check-in.');
+
         return;
       }
 
       final permissionGranted = await requestLocationPermission();
+
       if (!permissionGranted) {
         _showSnack('Location permission is required for check-in.');
+
         return;
       }
 
       Location location = Location();
+
       bool serviceEnabled = await location.serviceEnabled();
+
       if (!serviceEnabled) {
         serviceEnabled = await location.requestService();
+
         if (!serviceEnabled) {
           _showSnack('Please turn on location services to check in.');
+
           return;
         }
       }
@@ -356,10 +445,12 @@ class _AttendancePageState extends State<AttendancePage> {
       if (!isOfficeWifi) {
         _showSnack(
             'You must be connected to the office WiFi ($officeSsid) to check in.');
+
         return;
       }
 
       final now = FieldValue.serverTimestamp();
+
       final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
 
       await FirebaseFirestore.instance
@@ -376,8 +467,11 @@ class _AttendancePageState extends State<AttendancePage> {
 
       setState(() {
         isCheckedIn = true;
+
         checkInTime = DateTime.now();
+
         elapsed = Duration.zero;
+
         timer = Timer.periodic(const Duration(milliseconds: 50), (_) {
           if (mounted) {
             setState(() {
@@ -393,10 +487,12 @@ class _AttendancePageState extends State<AttendancePage> {
     }
   }
 
-  // ---------------- Check Out ----------------
-  Future<void> _checkOut() async {
+  // ---------------- Check Out Logic (Moved to be called after confirmation) ----------------
+
+  Future<void> _performCheckOut() async {
     try {
       final deviceId = await getDeviceId();
+
       final deviceDoc = await FirebaseFirestore.instance
           .collection('devices')
           .doc(deviceId)
@@ -405,6 +501,7 @@ class _AttendancePageState extends State<AttendancePage> {
       if (!deviceDoc.exists ||
           deviceDoc.data()?['employee_id'] != widget.employeeId) {
         _showSnack('❌ This device is not authorized for check-out.');
+
         return;
       }
 
@@ -414,14 +511,18 @@ class _AttendancePageState extends State<AttendancePage> {
       if (!isOfficeWifi) {
         _showSnack(
             'You must be connected to the office WiFi ($officeSsid) to check out.');
+
         return;
       }
 
       if (checkInTime == null) return;
 
       timer?.cancel();
+
       final now = FieldValue.serverTimestamp();
+
       final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
+
       final totalSeconds = elapsed.inSeconds;
 
       await FirebaseFirestore.instance
@@ -436,6 +537,7 @@ class _AttendancePageState extends State<AttendancePage> {
 
       setState(() {
         isCheckedOut = true;
+
         elapsed = Duration(seconds: totalSeconds);
       });
 
@@ -445,23 +547,115 @@ class _AttendancePageState extends State<AttendancePage> {
     }
   }
 
+  // ---------------- Confirmation Dialog ----------------
+
+  Future<void> _showConfirmationDialog() async {
+    if (!mounted) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Confirm Check Out'),
+          content: Text(
+            'Are you sure you want to check out for today?\n\nTotal elapsed time: ${_formatElapsedDuration(elapsed)}',
+            style: const TextStyle(fontSize: 16),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: Text('CANCEL', style: TextStyle(color: primaryColor)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              style: TextButton.styleFrom(
+                backgroundColor: Colors.redAccent,
+                padding: const EdgeInsets.symmetric(horizontal: 15),
+              ),
+              child: const Text('CHECK OUT',
+                  style: TextStyle(
+                      color: Colors.white, fontWeight: FontWeight.bold)),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed == true) {
+      await _performCheckOut();
+    } else {
+      // Optionally show a snackbar that checkout was cancelled
+
+      _showSnack('Check out cancelled.');
+    }
+  }
+
+  // ---------------- Check Out Function (Updated to use dialog) ----------------
+
+  Future<void> _checkOut() async {
+    // Check if check-out is possible before showing the dialog to avoid unnecessary taps
+
+    if (checkInTime == null) {
+      return;
+    }
+
+    // Check if the device is authorized and connected to the correct WiFi
+
+    final deviceId = await getDeviceId();
+
+    final deviceDoc = await FirebaseFirestore.instance
+        .collection('devices')
+        .doc(deviceId)
+        .get();
+
+    if (!deviceDoc.exists ||
+        deviceDoc.data()?['employee_id'] != widget.employeeId) {
+      _showSnack('❌ This device is not authorized for check-out.');
+
+      return;
+    }
+
+    final isOfficeWifi =
+        await WifiService.isOnOfficeWifi(context, officeSsid: officeSsid);
+
+    if (!isOfficeWifi) {
+      _showSnack(
+          'You must be connected to the office WiFi ($officeSsid) to check out.');
+
+      return;
+    }
+
+    // If all pre-checks pass, show confirmation dialog
+
+    await _showConfirmationDialog();
+  }
+
   // ---------------- Helpers ----------------
 
   String formatSeconds(int totalSeconds) {
     final hours = totalSeconds ~/ 3600;
+
     final minutes = (totalSeconds % 3600) ~/ 60;
+
     final seconds = totalSeconds % 60;
+
     String twoDigits(int n) => n.toString().padLeft(2, '0');
+
     return '${twoDigits(hours)}:${twoDigits(minutes)}:${twoDigits(seconds)}';
   }
 
   String _formatElapsedDuration(Duration duration) {
     final hours = duration.inHours;
+
     final minutes = duration.inMinutes.remainder(60);
+
     final seconds = duration.inSeconds.remainder(60);
+
     final milliseconds = duration.inMilliseconds.remainder(1000);
 
     String twoDigits(int n) => n.toString().padLeft(2, '0');
+
     String threeDigits(int n) => n.toString().padLeft(3, '0').substring(0, 2);
 
     return '${twoDigits(hours)}:${twoDigits(minutes)}:${twoDigits(seconds)}.${threeDigits(milliseconds)}';
@@ -469,6 +663,7 @@ class _AttendancePageState extends State<AttendancePage> {
 
   void _showSnack(String msg) {
     if (!mounted) return;
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(msg),
@@ -486,7 +681,8 @@ class _AttendancePageState extends State<AttendancePage> {
       avatar: Icon(icon, color: Colors.white, size: 18),
       label: Text(
         label,
-        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+        style:
+            const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
       ),
       backgroundColor: color,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -568,13 +764,15 @@ class _AttendancePageState extends State<AttendancePage> {
       child: ElevatedButton.icon(
         onPressed: onPressed,
         icon: Icon(icon,
-            color: isEnabled ? primaryColor : const Color.fromARGB(179, 0, 0, 0)),
+            color:
+                isEnabled ? primaryColor : const Color.fromARGB(179, 0, 0, 0)),
         label: Text(
           text,
           style: TextStyle(
             fontSize: 18,
             fontWeight: FontWeight.bold,
-            color: isEnabled ? primaryColor : const Color.fromARGB(179, 0, 0, 0),
+            color:
+                isEnabled ? primaryColor : const Color.fromARGB(179, 0, 0, 0),
           ),
         ),
         style: ElevatedButton.styleFrom(
@@ -599,8 +797,10 @@ class _AttendancePageState extends State<AttendancePage> {
             onTapDown: (_) {
               if (!_isAdminTimerActive) {
                 _isAdminTimerActive = true;
+
                 _adminTapTimer = Timer(const Duration(seconds: 8), () {
                   _isAdminTimerActive = false;
+
                   if (mounted) {
                     Navigator.push(
                       context,
@@ -614,7 +814,9 @@ class _AttendancePageState extends State<AttendancePage> {
             onTapUp: (_) {
               if (_isAdminTimerActive) {
                 _adminTapTimer?.cancel();
+
                 _isAdminTimerActive = false;
+
                 if (mounted) {
                   Navigator.push(
                     context,
@@ -628,6 +830,7 @@ class _AttendancePageState extends State<AttendancePage> {
             onTapCancel: () {
               if (_isAdminTimerActive) {
                 _adminTapTimer?.cancel();
+
                 _isAdminTimerActive = false;
               }
             },
@@ -651,8 +854,7 @@ class _AttendancePageState extends State<AttendancePage> {
                     )
                   ],
                 ),
-                constraints:
-                    const BoxConstraints(minWidth: 20, minHeight: 20),
+                constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
                 child: Text(
                   unreadNotificationCount > 99
                       ? '99+'
@@ -672,15 +874,20 @@ class _AttendancePageState extends State<AttendancePage> {
   }
 
   // ---------------- UI ----------------
+
   @override
   Widget build(BuildContext context) {
     final timeStr = _formatElapsedDuration(elapsed);
+
     final isRegisterEnabled = !isDeviceRegistered && !isLoadingDevice;
 
     final checkInButtonColor = isCheckedIn ? Colors.grey : primaryColor;
+
     final checkOutButtonColor =
         (isCheckedIn && !isCheckedOut) ? Colors.redAccent : Colors.grey;
-    final registerButtonColor = isDeviceRegistered ? Colors.green : primaryColor;
+
+    final registerButtonColor =
+        isDeviceRegistered ? Colors.green : primaryColor;
 
     return Scaffold(
       backgroundColor: Colors.grey[50],
@@ -696,15 +903,21 @@ class _AttendancePageState extends State<AttendancePage> {
           icon: const Icon(Icons.menu, color: Colors.white, size: 28),
           onPressed: () {
             // ---------------- CHANGED TO BOTTOM SHEET ----------------
+
             showModalBottomSheet(
               context: context,
+
               isScrollControlled: true, // Needed to control height
-              backgroundColor: Colors.transparent, // Lets ProfilePage handle curve
+
+              backgroundColor:
+                  Colors.transparent, // Lets ProfilePage handle curve
+
               builder: (context) => ProfilePage(
                 employeeId: widget.employeeId,
                 employeeName: widget.employeeName,
               ),
             );
+
             // ---------------------------------------------------------
           },
         ),
